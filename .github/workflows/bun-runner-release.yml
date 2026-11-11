@@ -1,6 +1,6 @@
 name: Bun runner release
 
-# Builds the `t3` server/CLI as standalone executables with Bun canary (`--compile --aot`),
+# Builds the `t3` server/CLI as standalone executables with Bun canary (`--compile --bytecode`),
 # natively on each OS, and publishes them as a GitHub Release. No secrets or telemetry/relay
 # build env are used. This workflow is self-contained: it does not depend on any other workflow
 # or composite action in the repo, so the upstream workflows can be disabled in the fork.
@@ -74,17 +74,10 @@ jobs:
             echo "version=$(jq -r .version apps/server/package.json)-dev.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build executable (--aot, falls back to --bytecode)
+      - name: Build executable
         shell: bash
-        run: |
-          bun_bin="$(command -v bun)"
-          if pnpm --filter t3 run build:bun --target ${{ matrix.target }} --bun "$bun_bin"; then
-            echo "- ${{ matrix.name }}: built with \`--compile --aot\` (bun $(bun --revision))" >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "::warning::--aot build failed for ${{ matrix.target }}; falling back to --bytecode"
-            echo "- ${{ matrix.name }}: **--aot failed, fell back to \`--compile --bytecode\`** (bun $(bun --revision))" >> "$GITHUB_STEP_SUMMARY"
-            pnpm --filter t3 run build:bun --target ${{ matrix.target }} --bun "$bun_bin" --no-aot
-          fi
+        # Plain `bun build --compile --bytecode` (JIT). --aot stays opt-in in build-bun.ts.
+        run: pnpm --filter t3 run build:bun --target ${{ matrix.target }} --bun "$(command -v bun)"
 
       - name: Smoke test
         shell: bash
@@ -152,5 +145,5 @@ jobs:
           gh release create "$tag" out/* \
             --target "$GITHUB_SHA" \
             --title "t3 runner $tag" \
-            --notes "Standalone \`t3\` executables built with Bun canary \`--compile --aot\`. Verify with SHA256SUMS." \
+            --notes "Standalone \`t3\` executables built with Bun canary \`--compile --bytecode\`. Verify with SHA256SUMS." \
             $prerelease

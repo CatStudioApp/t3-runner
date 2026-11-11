@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
 /* oxlint-disable t3code/no-global-process-runtime -- Build tooling compares the build host with the executable target. */
 /**
- * Builds dist-bun/t3-<os>-<arch>[.exe] with `bun build --compile --aot` (--no-aot: --bytecode).
+ * Builds dist-bun/t3-<os>-<arch>[.exe] with `bun build --compile` (JIT; --aot is opt-in).
  * Native packages stay external and load from dist-bun/node_modules beside the binary.
- * Usage: node scripts/build-bun.ts [--target bun-<os>-<arch>] [--bun <path>] [--no-aot]
+ * Usage: node scripts/build-bun.ts [--target bun-<os>-<arch>] [--bun <path>] [--aot] [--no-bytecode]
  */
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
@@ -18,7 +18,11 @@ const serverDir = NodePath.resolve(import.meta.dirname, "..");
 const repoDir = NodePath.resolve(serverDir, "../..");
 
 function parseArgs(argv: ReadonlyArray<string>) {
-  const out: { target?: string; bun?: string; aot: boolean; explain?: string } = { aot: true };
+  const out: { target?: string; bun?: string; aot: boolean; bytecode: boolean; explain?: string } =
+    {
+      aot: false,
+      bytecode: true,
+    };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
     const value = () => {
@@ -30,7 +34,8 @@ function parseArgs(argv: ReadonlyArray<string>) {
     else if (arg.startsWith("--target=")) out.target = arg.slice(9);
     else if (arg === "--bun") out.bun = value();
     else if (arg.startsWith("--bun=")) out.bun = arg.slice(6);
-    else if (arg === "--no-aot") out.aot = false;
+    else if (arg === "--aot") out.aot = true;
+    else if (arg === "--no-bytecode") out.bytecode = false;
     else if (arg === "--explain") out.explain = value();
     else if (arg.startsWith("--explain=")) out.explain = arg.slice(10);
     else throw new Error(`Unknown argument: ${arg}`);
@@ -208,7 +213,7 @@ const t3BunPlugin: Bun.BunPlugin = {
       loader: "js",
     }));
     // Bun bug: `export * from "ws"` (a CJS package) inside a lazily-initialized module emits a
-    // reference to an undefined binding (ReferenceError: ws2 is not defined) in the bytecode build.
+    // reference to an undefined binding (ReferenceError: ws2 is not defined) in the compiled build.
     build.onLoad({ filter: /platform-node-shared[\\/]dist[\\/]NodeWS\.js$/ }, () => ({
       contents: [
         'import WS from "ws";',
@@ -225,11 +230,19 @@ const t3BunPlugin: Bun.BunPlugin = {
       if (!sourceRoots.some((root) => input.path.startsWith(root))) return undefined;
       if (input.path.includes(`${NodePath.sep}node_modules${NodePath.sep}`)) return undefined;
       let text = await Bun.file(input.path).text();
-      if (!text.includes("import.meta")) return undefined;
+      const original = text;
       if (input.path === NodePath.join(serverDir, "src/config.ts")) {
         text = text.replace(
           'resolve(join(import.meta.dirname, "client"))',
           '((globalThis as any).__T3CODE_BUN_CLIENT_DIR__ ?? resolve(join((globalThis as any).__T3CODE_BUN_EXE_DIR__, "client")))',
+        );
+      }
+      if (input.path === NodePath.join(serverDir, "src/observability/HeapAttribution.ts")) {
+        // Bun's v8.getHeapStatistics() walks the heap (~0.3 ms); this runs twice per span and
+        // made startup ~60x slower. process.memoryUsage().heapUsed costs <1 µs in Bun.
+        text = text.replace(
+          "NodeV8.getHeapStatistics().used_heap_size",
+          "process.memoryUsage().heapUsed",
         );
       }
       if (input.path === NodePath.join(serverDir, "src/speech/native.ts")) {
@@ -249,6 +262,7 @@ const t3BunPlugin: Bun.BunPlugin = {
           "import.meta.dirname",
           "((globalThis as any).__T3CODE_BUN_EXE_DIR__ as string)",
         );
+      if (text === original) return undefined;
       return { contents: text, loader: input.path.endsWith(".tsx") ? "tsx" : "ts" };
     });
   },
@@ -282,7 +296,7 @@ const external = [
 ];
 
 console.log(
-  `[build-bun] ${packageJson.name}@${packageJson.version} target=${target} aot=${args.aot} bun=${Bun.version}`,
+  `[build-bun] ${packageJson.name}@${packageJson.version} target=${target} aot=${args.aot} bytecode=${!args.aot && args.bytecode} bun=${Bun.version}`,
 );
 console.log(
   `[build-bun] embedding ${clientFiles.length} client files from ${NodePath.relative(repoDir, clientSrc)} (id ${clientId})`,
@@ -293,16 +307,20 @@ const result = await Bun.build({
   entrypoints: [entryPath],
   target: "bun",
   format: "esm",
-  // Identifier minification breaks the bytecode build (ReferenceError at startup); keep names.
+  // Identifier minification breaks the compiled build (ReferenceError at startup); keep names.
   minify: { whitespace: true, syntax: true, identifiers: false },
   sourcemap: "none",
+  bytecode: !args.aot && args.bytecode,
   define,
   external: [...new Set(external)],
   plugins: [t3BunPlugin],
   compile: {
     outfile: outFile,
     target: target as Bun.Build.Target,
-    ...(args.aot ? { aot: true, allowCodeFromDisk: true } : { bytecode: true }),
+    // Standalone executables ignore package.json "main"/"exports" without this, so the native
+    // packages in node_modules/ beside the binary would not resolve.
+    autoloadPackageJson: true,
+    ...(args.aot ? { aot: true, allowCodeFromDisk: true } : {}),
     ...(args.explain ? { aotExplain: args.explain } : {}),
     windows: { hideConsole: false },
   } as never,
