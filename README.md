@@ -7,6 +7,7 @@ Differences from upstream:
 - Built with Bun instead of Node (single executable plus a `node_modules/` folder of native packages that must stay beside it).
 - Product analytics are **off by default**.
 - The built-in terminal (node-pty) does **not work** under Bun yet. Agents and everything else do.
+- Intel Macs also get a **Node flavor** (`t3-runner-<ver>-darwin-x64-node.tar.gz`): official Node.js 26 + the server + a small `t3` shell launcher, with working terminals. The installer picks it by default on Intel Macs; choose explicitly with `T3_RUNNER_FLAVOR=node|bun`.
 - **Do not run `t3 update`**, and be aware the desktop app's SSH bootstrap downloads upstream Node builds. Both would replace this build. To update, re-run the installer.
 
 Install (no sudo; installs to `~/.t3-runner` and links `t3` into `~/.local/bin`, or `%LOCALAPPDATA%\t3-runner` on Windows):
@@ -19,7 +20,7 @@ curl -fsSL https://raw.githubusercontent.com/CatStudioApp/t3-runner/bun-runner/s
 irm https://raw.githubusercontent.com/CatStudioApp/t3-runner/bun-runner/scripts/install-runner.ps1 | iex
 ```
 
-Pin a version with `T3_RUNNER_VERSION=0.1.9`. Remove with `sh install-runner.sh --uninstall` (PowerShell: `$env:T3_RUNNER_UNINSTALL='1'` before the `irm` line). Installers verify SHA256SUMS.
+Pin a version with `T3_RUNNER_VERSION=0.1.9`; pick the build with `T3_RUNNER_FLAVOR=bun|node` (node: Intel Macs only for now; it falls back to bun if a release has no Node bundle). Remove with `sh install-runner.sh --uninstall` (PowerShell: `$env:T3_RUNNER_UNINSTALL='1'` before the `irm` line). Installers verify SHA256SUMS.
 
 Start and pair:
 

@@ -23,7 +23,7 @@ Windows PowerShell (installs to `%LOCALAPPDATA%\t3-runner`, adds it to the user 
 irm https://raw.githubusercontent.com/CatStudioApp/t3-runner/bun-runner/scripts/install-runner.ps1 | iex
 ```
 
-Options (env vars): `T3_RUNNER_VERSION=0.1.9` pins a version; `T3_RUNNER_HOME`, `T3_RUNNER_BIN_DIR` relocate it.
+Options (env vars): `T3_RUNNER_VERSION=0.1.9` pins a version; `T3_RUNNER_HOME`, `T3_RUNNER_BIN_DIR` relocate it; `T3_RUNNER_FLAVOR=bun|node` picks the build. Intel Macs default to `node` (Node.js 26 bundle with a `t3` sh launcher, working terminals, installed under `versions/<ver>-node`), falling back to `bun` when a release lacks the `-node` asset; everything else uses `bun`. Explicit `node` on other platforms fails until such assets exist.
 
 Verify with the full path, because a non-interactive ssh shell often lacks `~/.local/bin` on PATH: `~/.local/bin/t3 --version`. If the installer warns that the bin dir is not on PATH or that another `t3` shadows it, relay that warning to the user instead of editing their shell files unasked.
 
@@ -59,7 +59,7 @@ Product analytics are off by default in this build. For a hard lock-down on a Li
 
 ## Known limitations
 
-- The built-in terminal (node-pty) does not work under Bun yet; agent work and the rest of the app do.
+- The built-in terminal (node-pty) does not work under Bun yet; agent work and the rest of the app do. The Node flavor (Intel Macs) has working terminals.
 - `t3 update` and the desktop app's "SSH" environment bootstrap install upstream Node builds into `~/.t3/runtime` and can replace or bypass this build. For a runner host, pair over its Pairing URL or T3 Connect instead of letting the desktop bootstrap over SSH.
-- Published targets: darwin arm64/x64, linux x64/arm64, windows x64. On Apple Silicon the installer picks arm64 even from a Rosetta shell.
+- Published targets: darwin arm64/x64, linux x64/arm64, windows x64 (Bun), plus darwin x64 Node flavor. On Apple Silicon the installer picks arm64 even from a Rosetta shell.
 - Releases are tags `cat-v<version>` on GitHub; if the API lookup is rate limited, pass `T3_RUNNER_VERSION`.

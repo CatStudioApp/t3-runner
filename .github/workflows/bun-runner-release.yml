@@ -118,9 +118,61 @@ jobs:
           path: out/*
           if-no-files-found: error
 
+  build-node-darwin-x64:
+    name: Build darwin-x64 (Node flavor)
+    runs-on: macos-15-intel
+    env:
+      T3CODE_TELEMETRY_CHANNEL: dev
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 26.12.1
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build web client
+        run: pnpm --filter @t3tools/web build
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" == cat-v* ]]; then
+            echo "version=${GITHUB_REF_NAME#cat-v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=$(jq -r .version apps/server/package.json)-dev.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Package Node bundle
+        # Official Node runtime + apps/server/dist + runtime node_modules + sh launcher.
+        working-directory: apps/server
+        run: node scripts/package-node-bundle.ts --version "${{ steps.version.outputs.version }}" --out "$GITHUB_WORKSPACE/out-node"
+
+      - name: Smoke test
+        shell: bash
+        run: |
+          base="t3-runner-${{ steps.version.outputs.version }}-darwin-x64-node"
+          mkdir -p smoke out
+          tar -xzf "out-node/$base.tar.gz" -C smoke
+          ln -s "$PWD/smoke/$base/t3" smoke/t3-link
+          smoke/t3-link --version
+          mv "out-node/$base.tar.gz" out/
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: t3-darwin-x64-node
+          path: out/*
+          if-no-files-found: error
+
   release:
     name: Publish release
-    needs: build
+    needs: [build, build-node-darwin-x64]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -149,5 +201,5 @@ jobs:
           gh release create "$tag" out/* \
             --target "$GITHUB_SHA" \
             --title "t3 runner $tag" \
-            --notes "Standalone \`t3\` executables built with Bun canary \`--compile --bytecode\`. Verify with SHA256SUMS." \
+            --notes "Standalone \`t3\` executables built with Bun canary \`--compile --bytecode\`, plus a Node.js bundle for Intel Macs (\`-node\`, working terminals). Verify with SHA256SUMS." \
             $prerelease

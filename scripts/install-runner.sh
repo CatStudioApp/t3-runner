@@ -10,6 +10,8 @@
 #   T3_RUNNER_BIN_DIR   where the `t3` symlink goes (default: $HOME/.local/bin)
 #   T3_RUNNER_REPO      GitHub repo (default: CatStudioApp/t3-runner)
 #   T3_RUNNER_BASE_URL  testing: directory URL holding the archive + SHA256SUMS (needs T3_RUNNER_VERSION)
+#   T3_RUNNER_FLAVOR    bun | node (default: node on Intel Macs, bun elsewhere). The node flavor
+#                       bundles Node.js + the server and has working terminals (node-pty).
 set -eu
 
 REPO=${T3_RUNNER_REPO:-CatStudioApp/t3-runner}
@@ -19,6 +21,11 @@ BASE_URL=${T3_RUNNER_BASE_URL:-}
 VERSION=${T3_RUNNER_VERSION:-}
 VERSION=${VERSION#cat-v}
 VERSION=${VERSION#v}
+FLAVOR=${T3_RUNNER_FLAVOR:-}
+case "$FLAVOR" in
+  ""|bun|node) ;;
+  *) echo "error: T3_RUNNER_FLAVOR must be bun or node, got: $FLAVOR" >&2; exit 1 ;;
+esac
 
 say() { printf '%s\n' "$*"; }
 warn() { printf 'warning: %s\n' "$*" >&2; }
@@ -61,7 +68,7 @@ if [ "${1:-}" = "--uninstall" ] || [ "${1:-}" = "uninstall" ]; then
 fi
 case "${1:-}" in
   "") ;;
-  -h|--help) sed -n '2,15p' "$0" 2>/dev/null || true; exit 0 ;;
+  -h|--help) sed -n '2,17p' "$0" 2>/dev/null || true; exit 0 ;;
   *) die "unknown argument: $1 (only --uninstall is supported)" ;;
 esac
 
@@ -119,40 +126,64 @@ case "$VERSION" in
   *[!A-Za-z0-9._-]*|"") die "invalid version: $VERSION" ;;
 esac
 
-base="t3-runner-$VERSION-$platform-$arch"
-archive="$base.tar.gz"
 [ -n "$BASE_URL" ] || BASE_URL="https://github.com/$REPO/releases/download/cat-v$VERSION"
 BASE_URL=${BASE_URL%/}
 
-dest="$RUNNER_HOME/versions/$VERSION"
+flavor_explicit=1
+if [ -z "$FLAVOR" ]; then
+  flavor_explicit=0
+  if [ "$platform" = darwin ] && [ "$arch" = x64 ]; then FLAVOR=node; else FLAVOR=bun; fi
+fi
+
+# Sets archive/dest for $FLAVOR. The node archive's top dir and version dir carry a -node suffix.
+select_flavor() {
+  base="t3-runner-$VERSION-$platform-$arch"
+  dest="$RUNNER_HOME/versions/$VERSION"
+  if [ "$FLAVOR" = node ]; then
+    base="$base-node"
+    dest="$dest-node"
+  fi
+  archive="$base.tar.gz"
+}
+select_flavor
 
 # ---------------------------------------------------------------- download + install
 if [ -x "$dest/t3" ]; then
-  say "t3 runner $VERSION is already extracted at $dest"
+  say "t3 runner $VERSION ($FLAVOR) is already extracted at $dest"
 else
   TMP=$(mktemp -d "${TMPDIR:-/tmp}/t3-runner.XXXXXX")
-  say "Downloading $archive ..."
-  fetch "$BASE_URL/$archive" "$TMP/$archive" || die "download failed: $BASE_URL/$archive"
   fetch "$BASE_URL/SHA256SUMS" "$TMP/SHA256SUMS" || die "download failed: $BASE_URL/SHA256SUMS"
-
-  expected=$(awk -v f="$archive" '{n=$2; sub(/^\*/,"",n)} n==f {print $1; exit}' "$TMP/SHA256SUMS")
-  [ -n "$expected" ] || die "$archive is not listed in SHA256SUMS"
-  actual=$(sha256 "$TMP/$archive")
-  [ "$expected" = "$actual" ] || die "checksum mismatch for $archive (expected $expected, got $actual)"
-  say "Checksum OK ($actual)"
-
-  mkdir -p "$RUNNER_HOME/versions"
-  stage="$RUNNER_HOME/versions/.stage.$$"
-  rm -rf "$stage"
-  mkdir -p "$stage"
-  tar -xzf "$TMP/$archive" -C "$stage" --strip-components=1
-  [ -f "$stage/t3" ] || { rm -rf "$stage"; die "archive layout unexpected: no t3 binary"; }
-  chmod +x "$stage/t3"
-  if [ "$platform" = darwin ]; then
-    xattr -dr com.apple.quarantine "$stage" 2>/dev/null || true
+  listed() { awk -v f="$1" '{n=$2; sub(/^\*/,"",n)} n==f {print $1; exit}' "$TMP/SHA256SUMS"; }
+  expected=$(listed "$archive")
+  if [ -z "$expected" ] && [ "$FLAVOR" = node ] && [ "$flavor_explicit" = 0 ]; then
+    warn "release $VERSION has no Node flavor for $platform-$arch; installing the Bun build"
+    FLAVOR=bun
+    select_flavor
+    expected=$(listed "$archive")
   fi
-  rm -rf "$dest"
-  mv "$stage" "$dest"
+  [ -n "$expected" ] || die "$archive is not listed in SHA256SUMS"
+  if [ -x "$dest/t3" ]; then
+    say "t3 runner $VERSION ($FLAVOR) is already extracted at $dest"
+  else
+    say "Downloading $archive ..."
+    fetch "$BASE_URL/$archive" "$TMP/$archive" || die "download failed: $BASE_URL/$archive"
+    actual=$(sha256 "$TMP/$archive")
+    [ "$expected" = "$actual" ] || die "checksum mismatch for $archive (expected $expected, got $actual)"
+    say "Checksum OK ($actual)"
+
+    mkdir -p "$RUNNER_HOME/versions"
+    stage="$RUNNER_HOME/versions/.stage.$$"
+    rm -rf "$stage"
+    mkdir -p "$stage"
+    tar -xzf "$TMP/$archive" -C "$stage" --strip-components=1
+    [ -f "$stage/t3" ] || { rm -rf "$stage"; die "archive layout unexpected: no t3 launcher"; }
+    chmod +x "$stage/t3"
+    if [ "$platform" = darwin ]; then
+      xattr -dr com.apple.quarantine "$stage" 2>/dev/null || true
+    fi
+    rm -rf "$dest"
+    mv "$stage" "$dest"
+  fi
 fi
 
 link_atomic "$dest" "$RUNNER_HOME/current"
@@ -173,7 +204,7 @@ link_atomic "$RUNNER_HOME/current/t3" "$BIN_DIR/t3"
 # ---------------------------------------------------------------- report
 say ""
 if ver=$("$BIN_DIR/t3" --version 2>&1); then
-  say "Installed: $ver  ($BIN_DIR/t3 -> $RUNNER_HOME/current/t3)"
+  say "Installed: $ver, $FLAVOR flavor  ($BIN_DIR/t3 -> $RUNNER_HOME/current/t3)"
 else
   warn "installed, but 't3 --version' failed: $ver"
 fi
@@ -209,5 +240,7 @@ Next steps
 
 Update: re-run this installer (do NOT use 't3 update': it installs upstream Node builds).
 Remove: sh install-runner.sh --uninstall
-Note: the built-in terminal (node-pty) does not work in this Bun build yet.
 EOT
+if [ "$FLAVOR" = bun ]; then
+  say "Note: the built-in terminal (node-pty) does not work in the Bun build yet (T3_RUNNER_FLAVOR=node has it on Intel Macs)."
+fi
