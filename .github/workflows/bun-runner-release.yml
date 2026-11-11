@@ -41,6 +41,8 @@ jobs:
           - os: windows-latest
             name: windows-x64
             target: bun-windows-x64
+            # Canary bun dies with AssignProcessToJobObject (50) inside the Actions job object.
+            bun: latest
     env:
       T3CODE_TELEMETRY_CHANNEL: dev
     steps:
@@ -56,7 +58,7 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: canary
+          bun-version: ${{ matrix.bun || 'canary' }}
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -77,7 +79,9 @@ jobs:
       - name: Build executable
         shell: bash
         # Plain `bun build --compile --bytecode` (JIT). --aot stays opt-in in build-bun.ts.
-        run: pnpm --filter t3 run build:bun --target ${{ matrix.target }} --bun "$(command -v bun)"
+        # Run bun directly: a node -> bun spawn adds a nested job object that bun on Windows rejects.
+        working-directory: apps/server
+        run: bun scripts/build-bun.ts --target ${{ matrix.target }}
 
       - name: Smoke test
         shell: bash
