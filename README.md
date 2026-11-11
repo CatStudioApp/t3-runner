@@ -1,3 +1,42 @@
+# T3 Runner (CatStudioApp fork)
+
+This fork builds the T3 Code server/CLI (`t3`, the "runner") as a standalone executable with [Bun](https://bun.sh) (`bun build --compile --bytecode`) and publishes it on [GitHub Releases](https://github.com/CatStudioApp/t3-runner/releases) (tags `cat-v<version>`) for macOS (arm64, x64), Linux (x64, arm64) and Windows (x64). Use it on any machine that should host your agents, then connect from the T3 desktop, web or mobile app.
+
+Differences from upstream:
+
+- Built with Bun instead of Node (single executable plus a `node_modules/` folder of native packages that must stay beside it).
+- Product analytics are **off by default**.
+- The built-in terminal (node-pty) does **not work** under Bun yet. Agents and everything else do.
+- **Do not run `t3 update`**, and be aware the desktop app's SSH bootstrap downloads upstream Node builds. Both would replace this build. To update, re-run the installer.
+
+Install (no sudo; installs to `~/.t3-runner` and links `t3` into `~/.local/bin`, or `%LOCALAPPDATA%\t3-runner` on Windows):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/CatStudioApp/t3-runner/bun-runner/scripts/install-runner.sh | sh
+```
+
+```powershell
+irm https://raw.githubusercontent.com/CatStudioApp/t3-runner/bun-runner/scripts/install-runner.ps1 | iex
+```
+
+Pin a version with `T3_RUNNER_VERSION=0.1.9`. Remove with `sh install-runner.sh --uninstall` (PowerShell: `$env:T3_RUNNER_UNINSTALL='1'` before the `irm` line). Installers verify SHA256SUMS.
+
+Start and pair:
+
+```sh
+t3 serve            # prints "T3 Code server is ready." with Connection string, Token, Pairing URL, App link and a QR code
+t3 service install  # optional, macOS/Linux: run in the background
+t3 up               # let other devices in: T3 Connect, local network (--lan), or both
+t3 pair             # mint a fresh one-time pairing URL + QR for an already-running server
+t3 status           # show how other devices reach this host
+```
+
+In the desktop, web or mobile app choose **Add environment** and paste the Pairing URL (or scan the QR). Treat pairing URLs and tokens like passwords. Install and sign in to at least one provider CLI (for example `claude auth login`, `codex login`) on the host. Full docs: [remote access](docs/user/remote-access.md), [background service](docs/user/background-service.md).
+
+AI agents: see [`skills/t3-runner-install/SKILL.md`](skills/t3-runner-install/SKILL.md) for a skill that installs, starts, pairs and updates the runner locally or over SSH.
+
+---
+
 # T3 Code
 
 T3 Code is an "agent harness control surface". It enables control of the agents on your machine with a best-in-class mobile app ([iOS](https://apps.apple.com/us/app/t3-code-remote-claude-more/id6787819824), [Android](https://play.google.com/store/apps/details?id=com.t3tools.t3code)), [web app](https://app.t3.codes) and [Electron-based desktop app](https://t3.codes).
