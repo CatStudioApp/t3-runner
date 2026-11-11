@@ -826,6 +826,8 @@ type Sample = {
   readonly shell: Array<ShellEntry>;
   readonly shellUsage: Usage;
   readonly linked: Set<string>;
+  /** The branch PR the agent opened in this sample, which links alone do not prove. */
+  openedPullRequest: number | undefined;
   readonly codeStore: Record<string, unknown>;
   nextTask: number;
   /** Threads the agent launched in this sample, by id, so reading one shows its own brief. */
@@ -875,6 +877,10 @@ export const makeSample = (testCase: McpToolUseCase, base: Base): Sample => {
     shell,
     shellUsage: emptyUsage(),
     linked: new Set([...urls, ...shell.flatMap(createdPullRequests)]),
+    openedPullRequest: shell
+      .flatMap(createdPullRequests)
+      .map((url) => Number(/\/pull\/(\d+)/.exec(url)?.[1]))
+      .find((number) => number > 0),
     codeStore: {},
     nextTask: Math.max(0, ...taskNumbers) + 1,
     threads: new Map(),
@@ -1117,6 +1123,9 @@ const branchPullRequest = (sample: Sample) => {
   const prs = worldPullRequests(sample);
   const own = prs.find((pr) => pr.headRefName === branch);
   if (own !== undefined) return { number: Number(own.number), created: false, pr: own };
+  if (sample.openedPullRequest !== undefined) {
+    return { number: sample.openedPullRequest, created: false, pr: undefined };
+  }
   const mocked = (sample.testCase.setup.shellMocks ?? []).find((mock) =>
     /\b(pr|mr) create\b/.test(mock.match),
   );
@@ -1226,6 +1235,7 @@ export const t3Default = (
       const { number, created } = branchPullRequest(sample);
       const target = pullRequest(sample.repo, { number });
       sample.linked.add(target.url);
+      if (created) sample.openedPullRequest = number;
       return { ...target, created };
     }
     case "pull_request_read": {
@@ -1753,6 +1763,8 @@ export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(fun
     if (name === "request_secret") savedSecretFile(sample, mock);
     if (name === "pull_request_create" && isRecord(mock) && typeof mock.url === "string") {
       sample.linked.add(mock.url);
+      const number = Number(mock.number);
+      if (number > 0) sample.openedPullRequest = number;
     }
     return toolResult(
       call.id,
@@ -1768,13 +1780,7 @@ export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(fun
     }
     if (BRANCH_PULL_REQUEST_TOOLS.has(name) && input.number === undefined) {
       // Until the agent opens it, the PR a create would open does not exist.
-      const own = branchPullRequest(sample);
-      const mocked = testCase.setup.mocks?.pull_request_create;
-      const opened = [
-        pullRequest(sample.repo, { number: own.number }).url,
-        isRecord(mocked) ? mocked.url : undefined,
-      ].some((url) => typeof url === "string" && sample.linked.has(url));
-      if (own.created && !opened) return failed(BRANCH_HAS_NO_PR_ERROR);
+      if (branchPullRequest(sample).created) return failed(BRANCH_HAS_NO_PR_ERROR);
     }
     const value = t3Default(sample, name, input);
     if (name === "request_secret") savedSecretFile(sample, value);
