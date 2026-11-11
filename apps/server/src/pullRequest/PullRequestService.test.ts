@@ -1265,6 +1265,7 @@ it.effect(
   () =>
     Effect.gen(function* () {
       const asked: Array<ReadonlyArray<string>> = [];
+      let failing = 0;
       const check = (name: string, status: "success" | "failure" | "cancelled") => ({
         name,
         status,
@@ -1284,6 +1285,9 @@ it.effect(
                   check("Lint", "success"),
                   check("Test", "failure"),
                   check("E2E", "cancelled"),
+                  ...Array.from({ length: failing }, (_, index) =>
+                    check(`Shard ${index}`, "failure"),
+                  ),
                 ],
               }),
             getCheckLogs: (input) =>
@@ -1302,6 +1306,17 @@ it.effect(
       );
       assert.deepStrictEqual(asked, [["Test", "E2E"], ["Lint"]]);
       assert.include(missing.message, "Lint, Test, E2E");
+
+      failing = 6;
+      asked.length = 0;
+      const many = yield* service.checkLogs({ ...reference, tailLines: 50 });
+      // The host is asked for five; the other three come back unread, by name.
+      assert.lengthOf(asked[0] ?? [], 5);
+      assert.deepStrictEqual(
+        many.map((log) => log.name),
+        ["Shard 3", "Shard 4", "Shard 5"],
+      );
+      assert.include(many[0]?.detail ?? "", "Ask for this check by name");
     }),
 );
 
