@@ -1,0 +1,156 @@
+name: Bun runner release
+
+# Builds the `t3` server/CLI as standalone executables with Bun canary (`--compile --aot`),
+# natively on each OS, and publishes them as a GitHub Release. No secrets or telemetry/relay
+# build env are used. This workflow is self-contained: it does not depend on any other workflow
+# or composite action in the repo, so the upstream workflows can be disabled in the fork.
+
+on:
+  push:
+    tags:
+      - "cat-*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bun-runner-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            name: darwin-arm64
+            target: bun-darwin-arm64
+          - os: macos-15-intel
+            name: darwin-x64
+            target: bun-darwin-x64
+          - os: ubuntu-24.04
+            name: linux-x64
+            target: bun-linux-x64
+          - os: ubuntu-24.04-arm
+            name: linux-arm64
+            target: bun-linux-arm64
+          - os: windows-latest
+            name: windows-x64
+            target: bun-windows-x64
+    env:
+      T3CODE_TELEMETRY_CHANNEL: dev
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: pnpm/action-setup@v4
+        # Version comes from package.json "packageManager".
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 26.12.1
+          cache: pnpm
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: canary
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build web client
+        run: pnpm --filter @t3tools/web build
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" == cat-v* ]]; then
+            echo "version=${GITHUB_REF_NAME#cat-v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=$(jq -r .version apps/server/package.json)-dev.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build executable (--aot, falls back to --bytecode)
+        shell: bash
+        run: |
+          bun_bin="$(command -v bun)"
+          if pnpm --filter t3 run build:bun --target ${{ matrix.target }} --bun "$bun_bin"; then
+            echo "- ${{ matrix.name }}: built with \`--compile --aot\` (bun $(bun --revision))" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::--aot build failed for ${{ matrix.target }}; falling back to --bytecode"
+            echo "- ${{ matrix.name }}: **--aot failed, fell back to \`--compile --bytecode\`** (bun $(bun --revision))" >> "$GITHUB_STEP_SUMMARY"
+            pnpm --filter t3 run build:bun --target ${{ matrix.target }} --bun "$bun_bin" --no-aot
+          fi
+
+      - name: Smoke test
+        shell: bash
+        run: |
+          exe="apps/server/dist-bun/t3-${{ matrix.name }}"
+          [[ "${{ runner.os }}" == "Windows" ]] && exe="$exe.exe"
+          "$exe" --version
+
+      - name: Package
+        shell: bash
+        # Archive layout: t3-runner-<version>-<platform>-<arch>/{t3[.exe], node_modules/}.
+        # node_modules holds the native runtime packages (node-pty, fff, keyring, ...) the
+        # executable loads from beside itself, like upstream's CLI archive.
+        run: |
+          base="t3-runner-${{ steps.version.outputs.version }}-${{ matrix.name }}"
+          mkdir -p out "stage/$base"
+          src=apps/server/dist-bun
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            cp "$src/t3-${{ matrix.name }}.exe" "stage/$base/t3.exe"
+          else
+            cp "$src/t3-${{ matrix.name }}" "stage/$base/t3"
+          fi
+          cp -R "$src/node_modules" "stage/$base/node_modules"
+          cd stage
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            7z a -tzip "$GITHUB_WORKSPACE/out/$base.zip" "$base" > /dev/null
+          else
+            tar -czf "$GITHUB_WORKSPACE/out/$base.tar.gz" "$base"
+          fi
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: t3-${{ matrix.name }}
+          path: out/*
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          path: out
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: out
+        run: sha256sum t3-runner-* > SHA256SUMS && cat SHA256SUMS
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" == cat-v* ]]; then
+            tag="$GITHUB_REF_NAME"
+            prerelease=""
+          else
+            tag="cat-dev-${GITHUB_RUN_NUMBER}"
+            prerelease="--prerelease"
+          fi
+          gh release create "$tag" out/* \
+            --target "$GITHUB_SHA" \
+            --title "t3 runner $tag" \
+            --notes "Standalone \`t3\` executables built with Bun canary \`--compile --aot\`. Verify with SHA256SUMS." \
+            $prerelease
